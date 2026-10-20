@@ -686,6 +686,7 @@ class WebGame:
         advanced_base_url: Optional[str] = None,
         advanced_api_key: Optional[str] = None,
         advanced_thinking_level: Optional[str] = None,
+        verify: bool = True,
     ) -> LLMConfig:
         base = normalize_openai_base_url(base_url.strip() or self.session.llm_config.base_url)
         new_model = model.strip() or self.session.llm_config.model
@@ -730,7 +731,8 @@ class WebGame:
             advanced_api_key=new_adv_key,
             advanced_thinking_level=new_adv_thinking_level,
         )
-        _verify_llm_configs_or_raise(new_config)
+        if verify:
+            _verify_llm_configs_or_raise(new_config)
         save_runtime_llm(
             new_config.base_url,
             new_config.model,
@@ -4058,10 +4060,109 @@ async def api_reset_game() -> Dict[str, Any]:
     )
 
 
+def _persisted_llm_config() -> LLMConfig:
+    """无对局时按 runtime_llm.json + env 组装当前配置（缺 key 也不抛）。
+
+    让「菜单 → LLM 配置」在开局前也能读写：配置本来就存在
+    data/runtime_llm.json，与对局实例无关。"""
+    saved = load_runtime_llm()
+    base_url = saved.get("base_url") or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    return LLMConfig(
+        api_key=saved.get("api_key") or os.environ.get("OPENAI_API_KEY", ""),
+        base_url=normalize_openai_base_url(base_url),
+        model=saved.get("model") or os.environ.get("OPENAI_MODEL", "gpt-4o-mini"),
+        max_tokens=int(saved.get("max_tokens") or 8000),
+        timeout_seconds=float(saved.get("timeout_seconds") or 180),
+        connect_timeout_seconds=float(saved.get("connect_timeout_seconds") or 60),
+        read_timeout_seconds=float(saved.get("read_timeout_seconds") or 120),
+        thinking_level=saved.get("thinking_level") or "",
+        advanced_model=saved.get("advanced_model") or "",
+        advanced_base_url=saved.get("advanced_base_url") or "",
+        advanced_api_key=saved.get("advanced_api_key") or "",
+        advanced_thinking_level=saved.get("advanced_thinking_level") or "",
+    )
+
+
+def _apply_llm_config_standalone(
+    base_url: str,
+    model: str,
+    api_key: str,
+    max_tokens: int = 0,
+    timeout_seconds: float = 0,
+    connect_timeout_seconds: float = 0,
+    read_timeout_seconds: float = 0,
+    thinking_level: Optional[str] = None,
+    advanced_model: Optional[str] = None,
+    advanced_base_url: Optional[str] = None,
+    advanced_api_key: Optional[str] = None,
+    advanced_thinking_level: Optional[str] = None,
+    verify: bool = True,
+) -> LLMConfig:
+    """无对局时的保存路径：按已存配置做同样的「留空保留」合并，校验后落盘。"""
+    cur = _persisted_llm_config()
+    new_base = normalize_openai_base_url(base_url.strip() or cur.base_url)
+    new_model = model.strip() or cur.model
+    new_key = api_key.strip() or cur.api_key
+    new_max = max_tokens if max_tokens > 0 else cur.max_tokens
+    new_timeout = timeout_seconds if timeout_seconds > 0 else cur.timeout_seconds
+    new_connect = connect_timeout_seconds if connect_timeout_seconds > 0 else cur.connect_timeout_seconds
+    new_read = read_timeout_seconds if read_timeout_seconds > 0 else cur.read_timeout_seconds
+    new_thinking = cur.thinking_level if thinking_level is None else normalize_thinking_level(thinking_level)
+    new_adv_model = cur.advanced_model if advanced_model is None else advanced_model.strip()
+    if advanced_base_url is None:
+        new_adv_base = cur.advanced_base_url
+    else:
+        adv_in = advanced_base_url.strip()
+        new_adv_base = normalize_openai_base_url(adv_in) if adv_in else ""
+    new_adv_key = cur.advanced_api_key if advanced_api_key is None else advanced_api_key.strip()
+    new_adv_thinking = (
+        cur.advanced_thinking_level if advanced_thinking_level is None
+        else normalize_thinking_level(advanced_thinking_level)
+    )
+    cfg = LLMConfig(
+        api_key=new_key,
+        base_url=new_base,
+        model=new_model,
+        max_tokens=new_max,
+        timeout_seconds=new_timeout,
+        connect_timeout_seconds=new_connect,
+        read_timeout_seconds=new_read,
+        thinking_level=new_thinking,
+        advanced_model=new_adv_model,
+        advanced_base_url=new_adv_base,
+        advanced_api_key=new_adv_key,
+        advanced_thinking_level=new_adv_thinking,
+    )
+    if verify:
+        _verify_llm_configs_or_raise(cfg)
+    save_runtime_llm(
+        new_base,
+        new_model,
+        new_key,
+        new_max,
+        new_timeout,
+        new_connect,
+        new_read,
+        new_thinking,
+        new_adv_model,
+        new_adv_base,
+        new_adv_key,
+        new_adv_thinking,
+    )
+    return cfg
+
+
+def _is_rate_limit_text(text: str) -> bool:
+    """判断错误文本是否属于网关限流（限流不代表配置有误，不该拦住保存）。"""
+    return bool(re.search(r"429|rate.?limit|饱和|限流|overload|too many requests", text or "", re.I))
+
+
 @app.get("/api/llm/config")
 async def api_get_llm_config() -> Dict[str, Any]:
-    """读当前生效的 LLM 配置。api_key 不回传明文，只回是否已设置。"""
-    cfg = get_game().session.llm_config
+    """读当前生效的 LLM 配置。api_key 不回传明文，只回是否已设置。
+
+    对局未开始时读 runtime_llm.json，保证开局前也能查看/修改。"""
+    cfg = web_game.session.llm_config if web_game is not None else _persisted_llm_config()
     saved = load_runtime_llm()
     return {
         "base_url": cfg.base_url,
@@ -4109,23 +4210,41 @@ async def api_set_llm_config(request: LLMConfigRequest) -> Dict[str, Any]:
             base_url = parsed["base_url"]
         if parsed["api_key"] and not api_key:
             api_key = parsed["api_key"]
+    warning = ""
+    apply_args = dict(
+        max_tokens=request.max_tokens,
+        timeout_seconds=request.timeout_seconds,
+        connect_timeout_seconds=request.connect_timeout_seconds,
+        read_timeout_seconds=request.read_timeout_seconds,
+        thinking_level=thinking_level,
+        advanced_model=advanced,
+        advanced_base_url=adv_base,
+        advanced_api_key=adv_key,
+        advanced_thinking_level=adv_thinking,
+    )
+
+    def _apply(verify: bool) -> LLMConfig:
+        args = {**apply_args, "verify": verify}
+        if web_game is not None:
+            return web_game.apply_llm_config(base_url, request.model, api_key, **args)
+        # 未开局也能保存：只落 runtime_llm.json，下次开局自动生效
+        return _apply_llm_config_standalone(base_url, request.model, api_key, **args)
+
     try:
-        cfg = get_game().apply_llm_config(
-            base_url,
-            request.model,
-            api_key,
-            request.max_tokens,
-            request.timeout_seconds,
-            request.connect_timeout_seconds,
-            request.read_timeout_seconds,
-            thinking_level=thinking_level,
-            advanced_model=advanced,
-            advanced_base_url=adv_base,
-            advanced_api_key=adv_key,
-            advanced_thinking_level=adv_thinking,
-        )
+        cfg = _apply(True)
+    except HTTPException as e:
+        detail = e.detail
+        message = str(detail.get("message") if isinstance(detail, dict) else detail)
+        if not _is_rate_limit_text(message):
+            raise
+        # 限流只说明上游忙，不代表配置有误：跳过校验照常落盘
+        cfg = _apply(False)
+        warning = "网关限流中：配置已保存，但未通过连通性校验；稍后可用「查询模型」复核。"
     except LLMUnavailable as e:
-        raise HTTPException(status_code=400, detail=_llm_error_detail(e)) from None
+        if not _is_rate_limit_text(str(e)):
+            raise HTTPException(status_code=400, detail=_llm_error_detail(e)) from None
+        cfg = _apply(False)
+        warning = "网关限流中：配置已保存，但未通过连通性校验；稍后可用「查询模型」复核。"
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=400, detail=_llm_error_detail(e)) from None
     return {
@@ -4141,6 +4260,7 @@ async def api_set_llm_config(request: LLMConfigRequest) -> Dict[str, Any]:
         "has_advanced_api_key": bool(cfg.advanced_api_key),
         "advanced_thinking_level": cfg.advanced_thinking_level,
         "has_api_key": bool(cfg.api_key),
+        "warning": warning,
     }
 
 

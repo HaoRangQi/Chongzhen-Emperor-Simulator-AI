@@ -544,7 +544,8 @@ export function LLMConfigTab() {
       setInfo((cur) => (cur ? { ...cur, ...data } : null));
       setApiKey("");
       setAdvancedApiKey("");
-      setMsg("已生效并写入 data/runtime_llm.json。");
+      const warning = (data as LLMConfigInfo & { warning?: string }).warning;
+      setMsg(warning || "已生效并写入 data/runtime_llm.json。");
     } catch (e) {
       const detail = e instanceof ApiRequestError ? e.detail : null;
       setErr(detail ? `code: ${detail.code || "unknown"}\nmessage: ${detail.message || (e instanceof Error ? e.message : String(e))}` : e instanceof Error ? e.message : String(e));
