@@ -502,6 +502,25 @@ export function LLMConfigTab() {
           placeholder="https://api.openai.com/v1"
         />
       </label>
+      <label className="menu-field">
+        <span>
+          API Key{" "}
+          {info?.has_api_key ? <small className="ok">（当前已设置）</small> : <small className="warn">（未设置）</small>}
+        </span>
+        <div className="menu-row">
+          <input
+            className="menu-input"
+            type={show ? "text" : "password"}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={info?.has_api_key ? "留空保留当前" : "请输入"}
+            autoComplete="off"
+          />
+          <button className="menu-btn" type="button" onClick={() => setShow((v) => !v)}>
+            {show ? "隐" : "显"}
+          </button>
+        </div>
+      </label>
       <div className="menu-field">
         <span>Model <small className="menu-hint">（可点「查询模型」从网关拉取全部可选模型）</small></span>
         <div className="menu-row">
@@ -635,25 +654,6 @@ export function LLMConfigTab() {
           onChange={(e) => setReadTimeoutSeconds(e.target.value)}
           placeholder="120"
         />
-      </label>
-      <label className="menu-field">
-        <span>
-          API Key{" "}
-          {info?.has_api_key ? <small className="ok">（当前已设置）</small> : <small className="warn">（未设置）</small>}
-        </span>
-        <div className="menu-row">
-          <input
-            className="menu-input"
-            type={show ? "text" : "password"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={info?.has_api_key ? "留空保留当前" : "请输入"}
-            autoComplete="off"
-          />
-          <button className="menu-btn" type="button" onClick={() => setShow((v) => !v)}>
-            {show ? "隐" : "显"}
-          </button>
-        </div>
       </label>
       <div className="menu-row">
         <button className="menu-btn primary" onClick={onSave} disabled={busy}>

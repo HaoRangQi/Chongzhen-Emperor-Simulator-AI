@@ -703,6 +703,11 @@ export function ApiSettingsModal({
           <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com" />
         </label>
         <label>
+          API Key{" "}
+          <small className="menu-hint">{initial?.has_api_key ? "(已配置；如需更换请重新填写)" : "（必填）"}</small>
+          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={initial?.has_api_key ? "(已配置；留空保留)" : "sk-..."} />
+        </label>
+        <label>
           Model <small className="menu-hint">（可点「查询模型」从网关拉取全部可选模型）</small>
           <div className="menu-row">
             <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
@@ -761,10 +766,6 @@ export function ApiSettingsModal({
         <label>
           Read Timeout（流式 chunk 间隔上限）
           <input type="number" min={5} max={600} value={readTimeoutSeconds} onChange={(e) => setReadTimeoutSeconds(e.target.value)} placeholder="120" />
-        </label>
-        <label>
-          API Key
-          <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={initial?.has_api_key ? "(已配置；如需更换请重新填写)" : "sk-..."} />
         </label>
         {err && <div className="menu-error">{err}</div>}
         <div className="menu-modal-actions">
