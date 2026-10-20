@@ -4232,6 +4232,18 @@ class AutoplayStartRequest(BaseModel):
 
 
 @app.middleware("http")
+async def html_no_cache(request: Request, call_next):
+    """HTML 一律不缓存：前端重建后 index.html 换了 asset hash，
+    浏览器若用缓存版 index.html 会继续加载旧 bundle（改了功能却看不到）。
+    静态资源本身带 hash，长缓存无妨；只有 html 需要每次回源。"""
+    response = await call_next(request)
+    if "text/html" in str(response.headers.get("content-type", "")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+    return response
+
+
+@app.middleware("http")
 async def autoplay_write_lock(request: Request, call_next):
     """单一写入者：托管进行中，除 /api/autoplay/* 外的写请求一律 409。
     读接口（state/history 等）放行，保证观战面板能正常渲染。"""
