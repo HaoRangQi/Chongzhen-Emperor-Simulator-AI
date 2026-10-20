@@ -1,7 +1,8 @@
 import React from "react";
-import { Loader2, Trash2 } from "lucide-react";
-import { api, apiUrl, normalizeApiError } from "../api";
-import type { MenuCampaign, MenuStatus } from "../types";
+import { ClipboardPaste, Loader2, Search, Trash2 } from "lucide-react";
+import { api, apiUrl, fetchLlmModels, formatApiError, normalizeApiError, parseConnJson } from "../api";
+import { ModelPicker } from "./modelPicker";
+import type { LLMModelInfo, MenuCampaign, MenuStatus } from "../types";
 import { ScenarioManagerModal } from "./scenarioManager";
 
 type LauncherLogInfo = {
@@ -587,6 +588,49 @@ export function ApiSettingsModal({
   const [thinkingLevel, setThinkingLevel] = React.useState(initial?.thinking_level || "");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState("");
+  // 连接 JSON 直填 + 模型探测（与游戏内 LLM 配置同一套接口）
+  const [connJson, setConnJson] = React.useState("");
+  const [connBusy, setConnBusy] = React.useState(false);
+  const [models, setModels] = React.useState<LLMModelInfo[]>([]);
+  const [modelsBusy, setModelsBusy] = React.useState(false);
+  const [modelsOpen, setModelsOpen] = React.useState(false);
+  const [modelsErr, setModelsErr] = React.useState("");
+  const [modelSearch, setModelSearch] = React.useState("");
+
+  const onFetchModels = async (baseUrlArg?: string, apiKeyArg?: string) => {
+    setModelsBusy(true);
+    setModelsErr("");
+    try {
+      const data = await fetchLlmModels({
+        base_url: baseUrlArg ?? baseUrl,
+        api_key: apiKeyArg ?? apiKey,
+      });
+      setModels(data.models || []);
+      setModelSearch("");
+      setModelsOpen(true);
+      if (!data.count) setModelsErr(`网关返回 0 个模型（${data.endpoint}）。`);
+    } catch (e) {
+      setModelsOpen(false);
+      setModelsErr(formatApiError(e, "查询模型失败。"));
+    } finally {
+      setModelsBusy(false);
+    }
+  };
+
+  const onParseConn = async () => {
+    setConnBusy(true);
+    setErr("");
+    try {
+      const parsed = await parseConnJson(connJson);
+      setBaseUrl(parsed.base_url);
+      if (parsed.api_key) setApiKey(parsed.api_key);
+      await onFetchModels(parsed.base_url, parsed.api_key);
+    } catch (e) {
+      setErr(formatApiError(e, "连接 JSON 解析失败。"));
+    } finally {
+      setConnBusy(false);
+    }
+  };
 
   const onSave = async () => {
     setBusy(true);
@@ -630,12 +674,56 @@ export function ApiSettingsModal({
         <h2>设置 API</h2>
         <p className="menu-hint">推荐 DeepSeek（中文好、价格便宜）。配置写入本地，不上传。</p>
         <label>
+          快捷连接 JSON{" "}
+          <small className="menu-hint">
+            （Cherry Studio / new-api 连接串直填：{"{"}"_type":"newapi_channel_conn","key":"sk-...","url":"https://站点根"{"}"}）
+          </small>
+          <textarea
+            className="menu-input llm-conn-json"
+            rows={2}
+            value={connJson}
+            onChange={(e) => setConnJson(e.target.value)}
+            placeholder='{"_type":"newapi_channel_conn","key":"sk-...","url":"https://windhu.cc"}'
+            spellCheck={false}
+          />
+        </label>
+        <div className="menu-row">
+          <button
+            className="menu-btn"
+            type="button"
+            onClick={onParseConn}
+            disabled={connBusy || !connJson.trim()}
+            title="解析连接 JSON 并自动拉取模型列表"
+          >
+            {connBusy ? <Loader2 size={14} className="spin" /> : <ClipboardPaste size={14} />} 解析并填入（自动拉模型）
+          </button>
+        </div>
+        <label>
           Base URL
           <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.deepseek.com" />
         </label>
         <label>
-          Model
-          <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
+          Model <small className="menu-hint">（可点「查询模型」从网关拉取全部可选模型）</small>
+          <div className="menu-row">
+            <input value={model} onChange={(e) => setModel(e.target.value)} placeholder="deepseek-chat" />
+            <button className="menu-btn" type="button" onClick={() => onFetchModels()} disabled={modelsBusy}>
+              {modelsBusy ? <Loader2 size={14} className="spin" /> : <Search size={14} />} 查询模型
+            </button>
+          </div>
+          {modelsErr ? <div className="menu-error">{modelsErr}</div> : null}
+          {modelsOpen ? (
+            <ModelPicker
+              models={models}
+              current={model}
+              search={modelSearch}
+              onSearch={setModelSearch}
+              onPick={(id) => {
+                setModel(id);
+                setModelsOpen(false);
+              }}
+              onClose={() => setModelsOpen(false)}
+            />
+          ) : null}
         </label>
         <label>
           Thinking Level <small className="menu-hint">（空=默认，请填写你的模型支持的值。）</small>
