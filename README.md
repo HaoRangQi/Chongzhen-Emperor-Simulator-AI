@@ -32,8 +32,8 @@
 - 一个可用于 AI 对话的 API Key
 
 ```bash
-git clone https://github.com/wangwei-ying3/ming-salvage-sim.git
-cd ming-salvage-sim
+git clone https://github.com/HaoRangQi/Chongzhen-Emperor-Simulator-AI.git
+cd Chongzhen-Emperor-Simulator-AI
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -198,6 +198,7 @@ AI 的每一步思考、每句奏对、每道诏书、每月战报都实时上�
 | `CLI_API_KEY` | 否 | 回退 `OPENAI_API_KEY` | CLI 单独 API Key |
 | `CLI_BASE_URL` | 否 | 回退 `OPENAI_BASE_URL` | CLI 单独 API 地址 |
 | `CLI_MODEL` | 否 | 回退 `OPENAI_MODEL` | CLI 单独模型名 |
+| `MING_SIM_EMPEROR_MODEL` | 否 | 回退 `OPENAI_MODEL` | AI 托管时皇帝 Agent 专用模型（另有 `_BASE_URL`/`_API_KEY` 变体） |
 
 ## 目录
 
@@ -206,10 +207,11 @@ AI 的每一步思考、每句奏对、每道诏书、每月战报都实时上�
 ├── main.py                  # 纯文本入口
 ├── web_app.py               # 网页入口
 ├── ming_sim/                # 游戏规则、结算、存档、角色对话
+│   └── autoplay/            # AI 托管：皇帝 Agent 驱动器 + 结构化工具 + 观战事件
 ├── content/                 # 人物、事件、地区、军队、外部势力、提示词
 ├── web/                     # 网页界面
-├── docs/                    # 设定和开发文档
-├── scripts/                 # 自动跑局与平衡性测试
+├── docs/                    # 设定和开发文档（AI 托管见 docs/ai-autoplay.md）
+├── scripts/                 # 自动跑局与平衡性测试（autoplay_run.py：AI 托管无头跑局）
 ├── requirements.txt         # Python 依赖
 └── .env.example             # 配置模板
 ```
