@@ -45,7 +45,7 @@ from ming_sim.llm_config import (
 from agno.agent import Agent
 
 from ming_sim.agents import _dump_llm_messages, build_simulator_context
-from ming_sim.llm_model import create_agno_db, create_chat_model, extract_agent_text, verify_llm_available
+from ming_sim.llm_model import create_agno_db, create_chat_model, extract_agent_text, llm_unavailable_from_error, verify_llm_available
 from ming_sim.llm_contract import fail_if_llm_error
 from ming_sim.issues import _format_issue_ongoing
 from ming_sim.session import GameSession
@@ -3947,10 +3947,12 @@ async def api_list_llm_models(request: LLMModelsRequest) -> Dict[str, Any]:
 
     不写任何配置：base_url/api_key 取表单当前值（key 为空回退已保存的），
     探测失败返回 400 + 可读原因，前端原地提示。不依赖对局是否已开始。"""
-    base_url = normalize_openai_base_url((request.base_url or "").strip())
-    if not base_url:
+    saved_cfg = web_game.session.llm_config if web_game is not None else None
+    raw_base = (request.base_url or "").strip() or (saved_cfg.base_url if saved_cfg else "")
+    if not raw_base:
         raise HTTPException(status_code=400, detail="请先填写 Base URL。")
-    saved_key = web_game.session.llm_config.api_key if web_game is not None else ""
+    base_url = normalize_openai_base_url(raw_base)
+    saved_key = saved_cfg.api_key if saved_cfg else ""
     api_key = (request.api_key or "").strip() or saved_key
     if not api_key:
         raise HTTPException(status_code=400, detail="请先填写 API Key（或粘贴连接 JSON）。")
@@ -4250,6 +4252,56 @@ def _require_autoplay() -> AutoplayDriver:
     return driver
 
 
+def _preflight_llm(cfg: LLMConfig) -> None:
+    """托管开跑前的连通性/模型校验：短超时探一次，避免模型名错误时白跑四步。
+
+    不能直接用 verify_llm_available：agno 对 503/model_not_found 这类错误只打日志、
+    不抛异常，RunOutput 带 status=ERROR 但 content 为空，文本校验会误判通过。
+    这里显式检查 status 与空响应。"""
+    probe = LLMConfig(
+        api_key=cfg.api_key,
+        base_url=cfg.base_url,
+        model=cfg.model,
+        max_tokens=32,
+        timeout_seconds=min(30.0, float(cfg.timeout_seconds or 30.0)),
+        connect_timeout_seconds=min(10.0, float(cfg.connect_timeout_seconds or 10.0)),
+        read_timeout_seconds=min(20.0, float(cfg.read_timeout_seconds or 20.0)),
+        thinking_level=cfg.thinking_level,
+    )
+    agent = Agent(
+        name="托管前置校验",
+        id="autoplay-preflight",
+        session_id="autoplay-preflight",
+        model=create_chat_model(probe, temperature=0, max_tokens=64),
+        instructions=["只输出 ok。"],
+        markdown=False,
+    )
+    try:
+        output = agent.run("输出 ok")
+    except LLMUnavailable:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise llm_unavailable_from_error(e, "托管前置校验") from e
+    status = str(getattr(output, "status", "") or "")
+    if status.upper().endswith("ERROR"):
+        raise LLMUnavailable(
+            f"模型不可用：网关返回错误（模型「{cfg.model}」不存在或鉴权失败）。"
+            "请在菜单「LLM 配置」用「查询模型」核对可用模型后重试。",
+            code="llm_model_error",
+        )
+    # 思考型模型（glm/deepseek 深思系）可能把预算全用在 reasoning 上、正文为空，
+    # 只要 content 或 reasoning_content 任一非空即视为模型可用。
+    has_text = bool(extract_agent_text(output).strip()) or bool(
+        str(getattr(output, "reasoning_content", "") or "").strip()
+    )
+    if not has_text:
+        raise LLMUnavailable(
+            f"模型无响应：返回空内容（模型「{cfg.model}」）。"
+            "请在菜单「LLM 配置」用「查询模型」换一个可用模型。",
+            code="llm_empty_response",
+        )
+
+
 @app.get("/api/autoplay/personas")
 async def api_autoplay_personas() -> Dict[str, Any]:
     return {"personas": [{"key": k, "label": PERSONA_LABELS.get(k, k)} for k in PERSONA_PRESETS]}
@@ -4267,6 +4319,13 @@ async def api_autoplay_start(body: AutoplayStartRequest) -> Dict[str, Any]:
     persona = (body.persona or "balanced").strip()
     if persona not in PERSONA_PRESETS:
         persona = "balanced"
+    # 开跑前置校验：模型不存在/网关不通时立即报错，而不是空转四步后停
+    try:
+        await asyncio.to_thread(_preflight_llm, game.session.llm_config)
+    except LLMUnavailable as e:
+        raise HTTPException(status_code=400, detail=_llm_error_detail(e)) from None
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=_llm_error_detail(e)) from None
     config = AutoplayConfig(
         goal=str(body.goal or "").strip(),
         persona=persona,

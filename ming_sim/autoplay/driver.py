@@ -119,6 +119,8 @@ class AutoplayDriver:
         self._tokens: Dict[str, int] = {"input": 0, "output": 0, "total": 0}
         self._started_at: Optional[float] = None
         self._month_start_metrics: Dict[str, float] = {}
+        self._empty_steps = 0
+        self._turn_tool_start = 0
         # 观战
         self._subscribers: List["queue.Queue[Dict[str, Any]]"] = []
         self._history: Deque[Dict[str, Any]] = deque(maxlen=_HISTORY_LIMIT)
@@ -330,7 +332,7 @@ class AutoplayDriver:
                 self._steps_this_turn += 1
                 first = self._steps_this_turn == 1
                 prompt = self._month_prompt(first=first)
-                self._run_agent_stream(prompt)
+                step_calls = self._run_agent_stream(prompt)
                 self._consec_errors = 0
                 if self._issued_this_turn:
                     # 本月已颁诏：重置步数并在下一轮开新月
@@ -343,10 +345,23 @@ class AutoplayDriver:
                         "metrics": snap_metrics(self.game)["metrics"],
                     })
                     continue
+                # 连续空步熔断：模型没动手（不调工具）两步就停，不必等步数耗尽
+                self._empty_steps = self._empty_steps + 1 if step_calls == 0 else 0
+                if self._empty_steps >= 2:
+                    self._park(
+                        f"连续 {self._empty_steps} 步 AI 未调用任何工具——"
+                        "多半是模型不可用、不支持工具调用，或网关异常。"
+                        "请到菜单「LLM 配置」用「查询模型」换一个可用模型后重试。"
+                    )
+                    continue
                 if self._steps_this_turn >= max(1, cfg.max_steps_per_turn):
+                    turn_calls = self._tool_calls - self._turn_tool_start
                     self._park(
                         f"第 {self.game.state.turn} 回合步数达上限 "
-                        f"({max(1, cfg.max_steps_per_turn)}) 且未颁诏。"
+                        f"({max(1, cfg.max_steps_per_turn)}) 且未颁诏"
+                        + ("（本回合工具调用 0 次：AI 没动手，多半是模型不可用或不支持工具调用）"
+                           if turn_calls == 0 else f"（本回合工具调用 {turn_calls} 次）")
+                        + "。"
                     )
                     continue
             except _StopRequested:
@@ -373,6 +388,8 @@ class AutoplayDriver:
         self._issued_this_turn = False
         self._need_begin_month = False
         self._turns_played += 1
+        self._empty_steps = 0
+        self._turn_tool_start = self._tool_calls
         self._month_start_metrics = snap_metrics(self.game)["metrics"]
         try:
             situation = situation_text(self.game, self.config.goal)
@@ -440,18 +457,23 @@ class AutoplayDriver:
         )
         return agent
 
-    def _run_agent_stream(self, prompt: str) -> None:
-        """跑一步 agent：thinking 增量转 thought_delta 事件，跑完记账/落盘。
+    def _run_agent_stream(self, prompt: str) -> int:
+        """跑一步 agent：thinking 增量转 thought_delta 事件，跑完记账/落盘。返回本步工具调用数。
 
         语言纪律（agno 3.x 事件模型）：
         - `reasoning_content` 是模型内部思考链——reasoner 类模型常用英文思考，
           这不是皇帝的「圣心独白」，一律不上屏；
         - 工具调用前导文本/premable 也可能是英文——可见内容若整段无汉字，
           同样不上屏（圣心独白按提示词必须是中文）；
-        两处都只过滤观战展示，不影响任何游戏状态。"""
+        两处都只过滤观战展示，不影响任何游戏状态。
+
+        错误可见性：agno 对「模型不存在 / 网关 503」这类错误只打日志、不抛异常，
+        RunOutput 会带 status=ERROR。这里显式转成 LLMUnavailable，
+        避免被当成「正常但空转的一步」而拖到步数上限才报错。"""
         agent = self._agent
         if agent is None:
             raise RuntimeError("AI 皇帝尚未初始化。")
+        calls_before = self._tool_calls
         stream = agent.run(
             prompt, stream=True, stream_events=True, yield_run_output=True,
         )
@@ -479,6 +501,19 @@ class AutoplayDriver:
         text = "".join(thought_parts).strip()
         if text:
             self.emit(KIND_THOUGHT_DONE, {"content": text[:2000]})
+        # 3) agno 静默失败的显式化：status=ERROR 或整步零工具零正文
+        status = str(getattr(run_output, "status", "") or "")
+        if status.upper().endswith("ERROR"):
+            raise LLMUnavailable(
+                "LLM 调用失败：模型/网关返回错误（模型名不存在、鉴权失败或网关限流）。"
+                "请在菜单「LLM 配置」里用「查询模型」核对可用模型。"
+            )
+        calls_this_step = self._tool_calls - calls_before
+        if calls_this_step == 0 and not text:
+            raise LLMUnavailable(
+                "LLM 返回空响应（未调用任何工具，也没有正文）。"
+                "常见原因：模型名不存在 / 模型不支持工具调用 / 网关异常。"
+            )
         # token 记账（agno metrics 口径，含 cache_read/write）
         try:
             metrics = getattr(run_output, "metrics", None)
@@ -496,3 +531,4 @@ class AutoplayDriver:
             pass
         if self.config.step_delay > 0:
             time.sleep(self.config.step_delay)
+        return calls_this_step
