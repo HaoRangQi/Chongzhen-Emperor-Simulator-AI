@@ -53,6 +53,10 @@ class _StopRequested(Exception):
     """驱动器线程收到停止请求，在安全点抛出以退出主循环。"""
 
 
+class _StepAborted(Exception):
+    """单步被护栏掐断（工具调用失控/超时）：不是瞬时故障，直接暂停不重试。"""
+
+
 def emperor_llm_config(base: LLMConfig) -> LLMConfig:
     """皇帝 Agent 用的 LLM 配置：默认跟游戏主模型一致（低成本长线），
     可用 MING_SIM_EMPEROR_MODEL / _BASE_URL / _API_KEY 覆盖（想换更强模型时）。"""
@@ -87,6 +91,8 @@ class AutoplayConfig:
     max_turns: int = 0
     max_steps_per_turn: int = 4
     max_chats_per_turn: int = 6
+    max_tool_calls_per_step: int = 24
+    step_timeout: float = 240.0
     max_consec_errors: int = 3
     error_backoff: float = 5.0
     token_budget: int = 0
@@ -371,6 +377,10 @@ class AutoplayDriver:
                     continue
             except _StopRequested:
                 break
+            except _StepAborted as e:
+                # 护栏掐断：不重试，直接暂停并说明原因
+                self._steps_this_turn = max(0, self._steps_this_turn - 1)
+                self._park(str(e))
             except LLMUnavailable as e:
                 # 失败的一步不消耗步数预算（限流/超时重试不该挤占本月额度）
                 self._steps_this_turn = max(0, self._steps_this_turn - 1)
@@ -505,12 +515,29 @@ class AutoplayDriver:
         if agent is None:
             raise RuntimeError("AI 皇帝尚未初始化。")
         calls_before = self._tool_calls
+        step_started = time.monotonic()
+        step_tool_cap = max(4, int(self.config.max_tool_calls_per_step or 24))
+        step_deadline = step_started + max(30.0, float(self.config.step_timeout or 240.0))
         stream = agent.run(
             prompt, stream=True, stream_events=True, yield_run_output=True,
         )
         thought_parts: List[str] = []
         run_output = None
         for event in stream:
+            # 0) 每收到一个事件就检查一次：停止请求 / 单步超时 / 工具调用失控
+            #    这三条是「卡死」的兜底——agno 的 tool_call_limit 在流式下不生效，
+            #    模型陷入循环时 run() 永不返回，只能由驱动器主动掐断。
+            if self._pending_stop:
+                raise _StopRequested()
+            if time.monotonic() > step_deadline:
+                raise _StepAborted(
+                    f"单步超过 {int(self.config.step_timeout)} 秒未结束，已中止（网关过慢或模型卡住）。"
+                )
+            if self._tool_calls - calls_before > step_tool_cap:
+                raise _StepAborted(
+                    f"单步工具调用超过 {step_tool_cap} 次，疑似模型陷入循环，已中止本步。"
+                    "可点「继续」重试，或换一个更稳的模型。"
+                )
             try:
                 event_name = getattr(event, "event", "")
             except Exception:
