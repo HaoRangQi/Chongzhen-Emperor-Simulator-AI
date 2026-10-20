@@ -372,8 +372,11 @@ class AutoplayDriver:
             except _StopRequested:
                 break
             except LLMUnavailable as e:
+                # 失败的一步不消耗步数预算（限流/超时重试不该挤占本月额度）
+                self._steps_this_turn = max(0, self._steps_this_turn - 1)
                 self._handle_step_error(f"LLM 调用失败：{e}")
             except Exception as e:  # noqa: BLE001
+                self._steps_this_turn = max(0, self._steps_this_turn - 1)
                 self._handle_step_error(f"本月处理异常：{e}")
         # 线程退出
         if self.status not in ("finished", "error"):
@@ -385,9 +388,11 @@ class AutoplayDriver:
         self._consec_errors += 1
         self.emit(KIND_ERROR, {"message": message, "error_streak": self._consec_errors})
         if self._consec_errors >= max(1, cfg.max_consec_errors):
-            self._park(f"连续 {self._consec_errors} 次出错，已暂停等待人工处理。")
+            self._park(f"连续 {self._consec_errors} 次出错，已暂停等待人工处理（多为网关限流或模型不可用）。")
             return
-        time.sleep(min(30.0, cfg.error_backoff * self._consec_errors))
+        # 限流类错误退避更久：10s → 25s
+        backoff = max(cfg.error_backoff, 10.0) * (1 + (self._consec_errors - 1) * 1.5)
+        time.sleep(min(60.0, backoff))
 
     def _begin_month(self) -> None:
         self._issued_this_turn = False
@@ -530,18 +535,29 @@ class AutoplayDriver:
         # 3) agno 静默失败的显式化：status=ERROR 或整步零工具零正文
         status = str(getattr(run_output, "status", "") or "")
         if status.upper().endswith("ERROR"):
+            detail = str(getattr(run_output, "content", "") or "").strip()
+            if re.search(r"429|rate.?limit|饱和|限流|overload", detail, re.I):
+                raise LLMUnavailable(
+                    f"网关限流（上游负载饱和）：{detail[:160] or '请稍后重试或换模型'}"
+                )
             raise LLMUnavailable(
-                "LLM 调用失败：模型/网关返回错误（模型名不存在、鉴权失败或网关限流）。"
-                "请在菜单「LLM 配置」里用「查询模型」核对可用模型。"
+                f"LLM 调用失败：{detail[:200] or '模型名不存在、鉴权失败或网关异常'}"
+                "。请在菜单「LLM 配置」用「查询模型」核对可用模型。"
             )
         calls_this_step = self._tool_calls - calls_before
         if calls_this_step == 0 and not text:
             raise LLMUnavailable(
                 "LLM 返回空响应（未调用任何工具，也没有正文）。"
-                "常见原因：模型名不存在 / 模型不支持工具调用 / 网关异常。"
+                "常见原因：网关限流/上游饱和、模型名不存在、模型不支持工具调用。"
             )
         # token 记账（agno metrics 口径，含 cache_read/write）
         metrics = getattr(run_output, "metrics", None)
+        if metrics is None:
+            # 流式终态事件常不带 metrics，回读 agent 最近一次 RunOutput
+            try:
+                metrics = getattr(agent.get_last_run_output(), "metrics", None)
+            except Exception:
+                metrics = None
         if metrics is not None:
             try:
                 self._tokens["input"] += int(getattr(metrics, "input_tokens", 0) or 0)
