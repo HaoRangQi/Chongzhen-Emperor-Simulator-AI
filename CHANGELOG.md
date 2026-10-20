@@ -5,6 +5,7 @@
 ## [未发布]
 
 ### 新增
+- **LLM 连接 JSON 直填 + 模型探测**：菜单「LLM 配置」支持直接粘贴 Cherry Studio / new-api 连接串（`{"_type":"newapi_channel_conn","key":"sk-...","url":"https://站点根"}`，url 自动补 `/v1`），一键解析并填入；「查询模型」向 `{base_url}/models` 拉取网关全部模型，选择器带搜索、按厂商分组、视觉/推理/工具能力打标，自动过滤 embedding/tts/rerank 等非对话模型。新端点 `POST /api/llm/parse_conn`、`POST /api/llm/models`（探测不依赖对局开启）。
 - **AI 托管（观战模式）**：AI 自己当崇祯，人类围观。新增 `ming_sim/autoplay/`——后台线程 `AutoplayDriver` 持 agno 皇帝 Agent，用 10 个结构化工具（`get_situation`/`list_ministers`/`chat_with_minister`/`list_drafts`/`confirm_draft`/`reject_draft`/`add_draft`/`delete_draft`/`issue_decree`/`submit_decisions`）直接调 `GameSession`，与人类同一条操作通道；7 套人格预设（持重/多疑/强硬/仁慈/权谋/果决/忧深切）。`web_app.py` 新增 7 个 `/api/autoplay/*` 端点与 SSE 事件流（thought/tool_call/chat_delta/draft/issued/decision/report 等 15 类事件，连接即重放最近 500 条），托管期间写请求一律 409（单一写入者），支持暂停/继续/停止/**接管亲政**（步间安全点退出，存档不坏）。前端 `autoplayPanel.tsx`：观战时间线 + 指标卡 + 悬浮状态丸，菜单新增「AI 托管」标签页。`scripts/autoplay_run.py` 无头跑局（`--mock` 无 key 冒烟）。详见 [docs/ai-autoplay.md](docs/ai-autoplay.md)。
 - **事件记忆系统**：每回合结算后自动提炼记忆卡，按人物/派系/官职类型建索引；大臣召见时注入「旧事记忆」块，上限5条，对话前后贯通。支持规则提取（`record_event_memories_from_resolution`）与 LLM 提取（`memory_extractor` agent）两条路径；每科目保留最近3条，超出自动剪枝。
 - **推演记忆注入**：结算链新增 step 1.8——`memory_retrieval` agent 从本月诏书提取人名/地区/军队/势力/关键词（含可选 year/period），按 tags LIKE 匹配召回相关历史记忆（≤10条），注入 `season_simulator` 与 `score_extractor` payload；两个 prompt 同步说明字段含义与使用方式。
