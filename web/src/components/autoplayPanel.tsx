@@ -425,6 +425,11 @@ export function AutoplayPanel({ open, onClose }: { open: boolean; onClose: () =>
         {status?.reason ? <p className="ap-reason">{status.reason}</p> : null}
         {error ? <p className="ap-error">{error}</p> : null}
         {active ? <p className="ap-lock-note">托管进行中：人类游戏操作已锁定，可随时暂停或接管。</p> : null}
+        {active ? (
+          <p className="ap-hint-line">
+            关闭此面板不影响托管——AI 在服务器后台继续运行；随时点右下角「AI 托管中」状态丸回来查看（重开会回放最近进度）。
+          </p>
+        ) : null}
 
         <div className="ap-feed" ref={feedRef}>
           {items.length === 0 ? <p className="ap-dim ap-feed-empty">等待事件……</p> : null}

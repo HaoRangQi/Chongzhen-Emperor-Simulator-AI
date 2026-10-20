@@ -9818,3 +9818,4 @@ button:disabled {
 .llm-model-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .llm-model-caps { display: inline-flex; gap: 5px; flex: none; color: #8a6424; }
 .llm-models-empty { padding: 10px; text-align: center; }
+.ap-hint-line { margin: 2px 16px 0; font-size: 0.75rem; color: var(--muted); }
