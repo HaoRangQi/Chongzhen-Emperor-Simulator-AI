@@ -124,6 +124,12 @@ def build_tools(driver: Any) -> list:
         name = str(minister_name or "").strip()
         msg = str(message or "").strip()
         driver._note_tool_call("chat_with_minister", {"minister": name, "message": _trim(msg, 80)})
+        cap = max(1, int(getattr(driver.config, "max_chats_per_turn", 6) or 6))
+        if driver._chats_this_turn >= cap:
+            return (
+                f"（本月召见次数已用完（{cap} 次）。不要再召见任何人——"
+                "审阅现有草案后直接 issue_decree 颁诏；若草案不合意，用 add_draft 自己写一道再颁诏。）"
+            )
         if not name or not msg:
             return "（参数不全：需要大臣姓名与问话内容。先用 list_ministers() 查名册。）"
         try:
@@ -185,6 +191,7 @@ def build_tools(driver: Any) -> list:
         if labels:
             lines.append("【可继续进言】" + "、".join(labels[:6]))
         driver._chat_rounds += 1
+        driver._chats_this_turn += 1
         driver.emit(
             KIND_CHAT_DONE,
             {"minister": name, "answer": _trim(answer, 500), "proposed": proposed},

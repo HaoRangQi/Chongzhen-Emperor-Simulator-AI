@@ -86,6 +86,7 @@ class AutoplayConfig:
     persona: str = "balanced"
     max_turns: int = 0
     max_steps_per_turn: int = 4
+    max_chats_per_turn: int = 6
     max_consec_errors: int = 3
     error_backoff: float = 5.0
     token_budget: int = 0
@@ -121,6 +122,7 @@ class AutoplayDriver:
         self._month_start_metrics: Dict[str, float] = {}
         self._empty_steps = 0
         self._turn_tool_start = 0
+        self._chats_this_turn = 0
         # 观战
         self._subscribers: List["queue.Queue[Dict[str, Any]]"] = []
         self._history: Deque[Dict[str, Any]] = deque(maxlen=_HISTORY_LIMIT)
@@ -390,6 +392,7 @@ class AutoplayDriver:
         self._turns_played += 1
         self._empty_steps = 0
         self._turn_tool_start = self._tool_calls
+        self._chats_this_turn = 0
         self._month_start_metrics = snap_metrics(self.game)["metrics"]
         try:
             situation = situation_text(self.game, self.config.goal)
@@ -409,15 +412,35 @@ class AutoplayDriver:
             situation = situation_text(self.game, self.config.goal)
         except Exception as e:  # noqa: BLE001
             situation = f"（局势读取失败：{e}）"
+        total_steps = max(1, self.config.max_steps_per_turn)
+        remaining = total_steps - self._steps_this_turn + 1  # 含当前步
+        drafts = 0
+        try:
+            drafts = len(self.game.session.list_directives())
+        except Exception:
+            pass
         if first:
             return (
                 f"【新的一月】\n{situation}\n\n"
-                "请先看局，判断本月最急之处；再决定召见谁、问什么。"
-                "与大臣议定方略后让其拟旨；本月须至少颁诏一次才能进入下一月。"
+                f"本月共 {total_steps} 步可用，请先看局判断缓急，再决定召见谁、问什么。"
+                "议定方略后让大臣拟旨（或自己 add_draft），最后 issue_decree 颁诏。"
+                "本月最多召见 3-4 人，问到要点就收，不要反复追问同一位大臣。"
+            )
+        if remaining <= 1:
+            # 最后一步：强制收尾，避免把步数耗在闲谈上
+            if drafts > 0:
+                return (
+                    f"【本月最后一步】草案已在（{drafts} 条）。"
+                    "现在不要再召见任何人、不要再看局——直接调用 issue_decree() 颁诏，结束本月。"
+                )
+            return (
+                "【本月最后一步】还没有草案。不要再召见任何人——"
+                "直接用 add_draft 写一道覆盖本月最急事务的完整诏书（奉天承运皇帝诏曰…钦此。），"
+                "然后立刻 issue_decree() 颁诏。"
             )
         return (
-            f"【继续本月】尚未颁诏。\n{situation}\n\n"
-            "请继续：或继续召见议事、核定大臣拟旨；或审定草案后 issue_decree 颁诏。"
+            f"【继续本月】剩余 {remaining} 步，尚未颁诏。\n{situation}\n\n"
+            "请收束议事：草案够用就 issue_decree 颁诏；还要补问，最多再召见一人。"
         )
 
     def _build_agent(self) -> Agent:
@@ -515,16 +538,19 @@ class AutoplayDriver:
                 "常见原因：模型名不存在 / 模型不支持工具调用 / 网关异常。"
             )
         # token 记账（agno metrics 口径，含 cache_read/write）
-        try:
-            metrics = getattr(run_output, "metrics", None)
-            model_id = getattr(getattr(agent, "model", None), "id", None) or "emperor"
-            record_stream_metrics(str(model_id), metrics, caller_tag="AI皇帝托管")
-            step_total = int(getattr(metrics, "total_tokens", 0) or 0)
-            self._tokens["input"] += int(getattr(metrics, "input_tokens", 0) or 0)
-            self._tokens["output"] += int(getattr(metrics, "output_tokens", 0) or 0)
-            self._tokens["total"] += step_total
-        except Exception:
-            pass
+        metrics = getattr(run_output, "metrics", None)
+        if metrics is not None:
+            try:
+                self._tokens["input"] += int(getattr(metrics, "input_tokens", 0) or 0)
+                self._tokens["output"] += int(getattr(metrics, "output_tokens", 0) or 0)
+                self._tokens["total"] += int(getattr(metrics, "total_tokens", 0) or 0)
+            except Exception:
+                pass
+            try:
+                model_id = getattr(getattr(agent, "model", None), "id", None) or "emperor"
+                record_stream_metrics(str(model_id), metrics, caller_tag="AI皇帝托管")
+            except Exception:
+                pass
         try:
             _dump_llm_messages(run_output, "AI皇帝托管", agent=agent)
         except Exception:
