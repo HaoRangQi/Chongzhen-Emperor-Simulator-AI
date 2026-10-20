@@ -449,7 +449,56 @@ export type ChatDisplayMessage = ChatMessage & { pending?: boolean };
 
 export type Suggestion = { label: string; text: string; prefix?: boolean };
 
-export type ModalName = "none" | "state" | "chat" | "edict" | "report" | "extraction" | "history" | "menu" | "secret_orders" | "ending" | "long_goals";
+export type ModalName = "none" | "state" | "chat" | "edict" | "report" | "extraction" | "history" | "menu" | "secret_orders" | "ending" | "long_goals" | "autoplay";
+
+// ── AI 托管（观战模式） ────────────────────────────────────────────
+export type AutoplayStatus = "idle" | "running" | "paused" | "stopping" | "stopped" | "finished" | "error";
+
+export type AutoplayStatusPayload = {
+  active: boolean;
+  status: AutoplayStatus;
+  goal: string;
+  persona: string;
+  persona_label: string;
+  turn: number;
+  year: number;
+  period: number;
+  phase: string;
+  ended: boolean;
+  metrics: Record<string, number>;
+  turns_played: number;
+  steps_this_turn: number;
+  tool_calls: number;
+  chat_rounds: number;
+  tokens: { input: number; output: number; total: number };
+  elapsed_sec: number;
+  reason: string;
+  stop_requested: boolean;
+  error_streak: number;
+};
+
+export type AutoplayPersona = { key: string; label: string };
+
+export type AutoplayEventKind =
+  | "turn_start" | "thought_delta" | "thought_done"
+  | "tool_call" | "tool_result"
+  | "chat_start" | "chat_delta" | "chat_done"
+  | "draft" | "issued" | "decision" | "report"
+  | "status" | "error" | "finished" | "hello";
+
+export type AutoplayEvent = {
+  kind: AutoplayEventKind;
+  ts: number;
+  turn: number;
+  data: Record<string, any>;
+};
+
+export type AutoplayDecision = {
+  idx: number;
+  title: string;
+  context: string;
+  options: { label: string; hint: string }[];
+};
 
 export type SaveEntry = { name: string; size: number; mtime: number };
 

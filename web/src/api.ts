@@ -2,6 +2,9 @@ import React from "react";
 import { forwardSteamEvents } from "./steamEvents";
 import type {
   ApiErrorDetail,
+  AutoplayEvent,
+  AutoplayPersona,
+  AutoplayStatusPayload,
   ChatResponse,
   CourtChatMessage,
   CourtChatResponse,
@@ -208,6 +211,82 @@ export const summarizeCourtChat = async (messages: CourtChatMessage[]): Promise<
       })),
     }),
   });
+};
+
+// ---- AI 托管（观战模式） ----
+
+export const getAutoplayStatus = () =>
+  api<AutoplayStatusPayload>("/api/autoplay/status");
+
+export const getAutoplayPersonas = () =>
+  api<{ personas: AutoplayPersona[] }>("/api/autoplay/personas");
+
+export const startAutoplay = (body: {
+  goal?: string;
+  persona?: string;
+  max_turns?: number;
+  max_steps_per_turn?: number;
+  token_budget?: number;
+  step_delay?: number;
+  transcript?: boolean;
+}) =>
+  api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/start", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const pauseAutoplay = () =>
+  api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/pause", { method: "POST" });
+
+export const resumeAutoplay = () =>
+  api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/resume", { method: "POST" });
+
+export const stopAutoplay = () =>
+  api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/stop", { method: "POST" });
+
+export const takeoverAutoplay = () =>
+  api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/takeover", { method: "POST" });
+
+/** 订阅观战事件流（SSE）。返回取消订阅函数。 */
+export const subscribeAutoplayEvents = (
+  onEvent: (event: AutoplayEvent) => void,
+  onError?: (message: string) => void,
+): (() => void) => {
+  const controller = new AbortController();
+  const reader = (async () => {
+    try {
+      const response = await fetch(apiUrl("/api/autoplay/events"), { signal: controller.signal });
+      if (!response.ok || !response.body) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }));
+        throw new ApiRequestError(normalizeApiError(error, response.statusText), response.statusText);
+      }
+      const streamReader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await streamReader.read();
+        if (done) break;
+        buffer += decoder.decode(value || new Uint8Array(), { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          const parsed = parseSseMessage(block);
+          if (!parsed) continue;
+          try {
+            onEvent(JSON.parse(parsed.data) as AutoplayEvent);
+          } catch {
+            // ping/注释帧等非 JSON 帧直接忽略
+          }
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        onError?.(error instanceof Error ? error.message : String(error));
+      }
+    }
+  })();
+  void reader;
+  return () => controller.abort();
 };
 
 // ---- 自定义剧本 ----

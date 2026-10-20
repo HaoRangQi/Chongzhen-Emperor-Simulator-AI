@@ -1,18 +1,21 @@
 import React from "react";
-import { Check, Loader2, LogOut, Power, RotateCcw, Save, Settings, Trash2, Upload, X } from "lucide-react";
+import { Bot, Check, Loader2, LogOut, Power, RotateCcw, Save, Settings, Trash2, Upload, X } from "lucide-react";
 import { ApiRequestError, api } from "../api";
+import { AutoplayTab } from "./autoplayPanel";
 import type { LLMConfigInfo, SaveEntry } from "../types";
 
 export function GameMenuModal({
   onClose,
   onAfterLoad,
   onExitToMenu,
+  onOpenAutoplayPanel,
 }: {
   onClose: () => void;
   onAfterLoad: () => void;
   onExitToMenu: () => void;
+  onOpenAutoplayPanel?: () => void;
 }) {
-  const [tab, setTab] = React.useState<"save" | "load" | "llm" | "reset" | "exit_menu" | "shutdown">("save");
+  const [tab, setTab] = React.useState<"save" | "load" | "llm" | "reset" | "exit_menu" | "shutdown" | "autoplay">("save");
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -41,6 +44,9 @@ export function GameMenuModal({
             <button className={tab === "llm" ? "active" : ""} onClick={() => setTab("llm")}>
               <Settings size={14} /> LLM 配置
             </button>
+            <button className={tab === "autoplay" ? "active" : ""} onClick={() => setTab("autoplay")}>
+              <Bot size={14} /> AI 托管
+            </button>
             <button className={tab === "reset" ? "active" : ""} onClick={() => setTab("reset")}>
               <RotateCcw size={14} /> 重开新局
             </button>
@@ -55,6 +61,9 @@ export function GameMenuModal({
             {tab === "save" ? <SaveTab /> : null}
             {tab === "load" ? <LoadTab onAfterLoad={onAfterLoad} /> : null}
             {tab === "llm" ? <LLMConfigTab /> : null}
+            {tab === "autoplay" ? (
+              <AutoplayTab onOpenPanel={() => { onOpenAutoplayPanel?.(); onClose(); }} />
+            ) : null}
             {tab === "reset" ? <ResetTab onAfterReset={onAfterLoad} /> : null}
             {tab === "exit_menu" ? <ExitToMenuTab onExit={onExitToMenu} /> : null}
             {tab === "shutdown" ? <ShutdownTab /> : null}

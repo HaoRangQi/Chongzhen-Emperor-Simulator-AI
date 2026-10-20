@@ -21,9 +21,9 @@ import time
 import uuid
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -49,6 +49,8 @@ from ming_sim.llm_contract import fail_if_llm_error
 from ming_sim.issues import _format_issue_ongoing
 from ming_sim.session import GameSession
 from ming_sim.session import AUTO_SAVE_PREFIX
+from ming_sim.autoplay import AutoplayConfig, AutoplayDriver
+from ming_sim.autoplay.prompt import PERSONA_LABELS, PERSONA_PRESETS
 from ming_sim.context import character_context_with_db, match_minister_from_text
 from ming_sim.constants import TURN_UNIT, BUILDING_CATEGORIES
 from ming_sim.flows import ARMY_SALARY_PRIORITY, calc_province_fiscal, compute_budget_lines
@@ -4104,6 +4106,138 @@ async def api_get_portrait(name: str):
     if path is None:
         raise HTTPException(status_code=404, detail="无自定义立绘")
     return FileResponse(path)
+
+
+# ── AI 托管（观战模式）：AI 自己当皇帝，人类看进度与实时详情 ──────────
+autoplay_driver: Optional[AutoplayDriver] = None
+
+
+class AutoplayStartRequest(BaseModel):
+    goal: str = ""
+    persona: str = "balanced"
+    max_turns: int = 0            # 0=不限
+    max_steps_per_turn: int = 4   # 每月 agent 步数预算（防绕圈）
+    token_budget: int = 0         # 0=不限；超过即自动暂停
+    step_delay: float = 0.0       # 步间延时（秒，放慢方便观察）
+    transcript: bool = False      # 是否把事件流落盘 jsonl 复盘
+
+
+@app.middleware("http")
+async def autoplay_write_lock(request: Request, call_next):
+    """单一写入者：托管进行中，除 /api/autoplay/* 外的写请求一律 409。
+    读接口（state/history 等）放行，保证观战面板能正常渲染。"""
+    driver = autoplay_driver
+    if driver is not None and driver.is_active() and request.method not in ("GET", "HEAD", "OPTIONS"):
+        path = request.url.path or ""
+        if not path.startswith("/api/autoplay"):
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "AI 托管进行中：游戏操作已锁定。可暂停/停止 AI 后操作，或点「接管」亲自来。"},
+            )
+    return await call_next(request)
+
+
+def _require_autoplay() -> AutoplayDriver:
+    driver = autoplay_driver
+    if driver is None:
+        raise HTTPException(status_code=409, detail="尚未开启 AI 托管。")
+    return driver
+
+
+@app.get("/api/autoplay/personas")
+async def api_autoplay_personas() -> Dict[str, Any]:
+    return {"personas": [{"key": k, "label": PERSONA_LABELS.get(k, k)} for k in PERSONA_PRESETS]}
+
+
+@app.post("/api/autoplay/start")
+async def api_autoplay_start(body: AutoplayStartRequest) -> Dict[str, Any]:
+    global autoplay_driver
+    game = get_game()
+    if game.state.ended:
+        raise HTTPException(status_code=409, detail="本局已结局，无法开启托管。请重开新局。")
+    driver = autoplay_driver
+    if driver is not None and driver.is_active():
+        raise HTTPException(status_code=409, detail="AI 托管已在进行中。")
+    persona = (body.persona or "balanced").strip()
+    if persona not in PERSONA_PRESETS:
+        persona = "balanced"
+    config = AutoplayConfig(
+        goal=str(body.goal or "").strip(),
+        persona=persona,
+        max_turns=max(0, int(body.max_turns or 0)),
+        max_steps_per_turn=max(1, int(body.max_steps_per_turn or 4)),
+        token_budget=max(0, int(body.token_budget or 0)),
+        step_delay=max(0.0, float(body.step_delay or 0.0)),
+    )
+    driver = AutoplayDriver(game, config)
+    if body.transcript:
+        driver._transcript_path = str(user_data_path(f"autoplay_{int(time.time())}.jsonl"))
+    autoplay_driver = driver
+    driver.start()
+    return {"ok": True, "status": driver.status_payload()}
+
+
+@app.post("/api/autoplay/pause")
+async def api_autoplay_pause() -> Dict[str, Any]:
+    driver = _require_autoplay()
+    driver.pause()
+    return {"ok": True, "status": driver.status_payload()}
+
+
+@app.post("/api/autoplay/resume")
+async def api_autoplay_resume() -> Dict[str, Any]:
+    driver = _require_autoplay()
+    driver.resume()
+    return {"ok": True, "status": driver.status_payload()}
+
+
+@app.post("/api/autoplay/stop")
+async def api_autoplay_stop() -> Dict[str, Any]:
+    driver = _require_autoplay()
+    driver.stop("人类观察员停止了 AI 托管")
+    return {"ok": True, "status": driver.status_payload()}
+
+
+@app.post("/api/autoplay/takeover")
+async def api_autoplay_takeover() -> Dict[str, Any]:
+    """人类接管：停止 AI（当前 agent 步跑完后在安全点退出），人从同一进度接着玩。"""
+    driver = _require_autoplay()
+    driver.stop("人类已接管，AI 皇帝退朝")
+    return {"ok": True, "status": driver.status_payload()}
+
+
+@app.get("/api/autoplay/status")
+async def api_autoplay_status() -> Dict[str, Any]:
+    if autoplay_driver is None:
+        return {"active": False, "status": "idle"}
+    return autoplay_driver.status_payload()
+
+
+@app.get("/api/autoplay/events")
+async def api_autoplay_events() -> StreamingResponse:
+    """观战事件流（SSE）。新连接先重放最近事件，再收实时流；20s 无事件发 ping 保活。"""
+    driver = _require_autoplay()
+    sub = driver.subscribe()
+
+    async def generate() -> AsyncIterator[str]:
+        try:
+            yield sse_event("hello", {
+                "kind": "hello", "ts": time.time(),
+                "turn": driver.status_payload().get("turn", 0),
+                "data": {"status": driver.status},
+            })
+            loop = asyncio.get_running_loop()
+            while True:
+                try:
+                    event = await asyncio.wait_for(loop.run_in_executor(None, sub.get), timeout=20)
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"
+                    continue
+                yield sse_event(str(event.get("kind", "message")), event)
+        finally:
+            driver.unsubscribe(sub)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 # ── 调试台：直接读写核心表 ─────────────────────────────────────

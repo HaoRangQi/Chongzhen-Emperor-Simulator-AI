@@ -6,6 +6,7 @@ import { AppointmentDrawer, ArmyDrawer, BuildingDrawer, CourtDrawer, EconomyDraw
 import { ExtractionModal } from "./components/extraction";
 import { GameMenuModal } from "./components/gameMenu";
 import { BudgetHover, CommandSlot, FullscreenModal, HUD_BG, HUD_SLOTS, LegacyBar, LongGoalsModal, QuadFrame } from "./components/hud";
+import { AutoplayFab, AutoplayPanel } from "./components/autoplayPanel";
 import { GrandMap, NodeIntel } from "./components/map";
 import { MenuPage } from "./components/menuPage";
 import { ChatModal, ClosedIssuesModal, EdictModal, EndingModal, HistoryModal, ReportModal, SecretOrdersModal, StateModal, filterConsorts, filterMinisters } from "./components/modals";
@@ -99,6 +100,8 @@ function App() {
   const [cheatDirective, setCheatDirective] = React.useState("");
   // HITL 决策点：颁诏推演若出遇阻纠偏，暂停弹窗逐个亲裁，裁完续跑结算。
   const [pendingDecisions, setPendingDecisions] = React.useState<PendingDecision[]>([]);
+  // AI 托管观战面板
+  const [autoplayPanelOpen, setAutoplayPanelOpen] = React.useState(false);
   const settling = busy === "月末结算";
 
   const loadState = React.useCallback(async () => {
@@ -1391,8 +1394,12 @@ function App() {
             await exitToMenu();
             setActiveModal("none");
           }}
+          onOpenAutoplayPanel={() => setAutoplayPanelOpen(true)}
         />
       ) : null}
+
+      <AutoplayFab onClick={() => setAutoplayPanelOpen(true)} />
+      <AutoplayPanel open={autoplayPanelOpen} onClose={() => setAutoplayPanelOpen(false)} />
 
       {closedModal.length ? (
         <ClosedIssuesModal items={closedModal} onClose={() => setClosedModal([])} />

@@ -5,6 +5,7 @@
 ## [未发布]
 
 ### 新增
+- **AI 托管（观战模式）**：AI 自己当崇祯，人类围观。新增 `ming_sim/autoplay/`——后台线程 `AutoplayDriver` 持 agno 皇帝 Agent，用 10 个结构化工具（`get_situation`/`list_ministers`/`chat_with_minister`/`list_drafts`/`confirm_draft`/`reject_draft`/`add_draft`/`delete_draft`/`issue_decree`/`submit_decisions`）直接调 `GameSession`，与人类同一条操作通道；7 套人格预设（持重/多疑/强硬/仁慈/权谋/果决/忧深切）。`web_app.py` 新增 7 个 `/api/autoplay/*` 端点与 SSE 事件流（thought/tool_call/chat_delta/draft/issued/decision/report 等 15 类事件，连接即重放最近 500 条），托管期间写请求一律 409（单一写入者），支持暂停/继续/停止/**接管亲政**（步间安全点退出，存档不坏）。前端 `autoplayPanel.tsx`：观战时间线 + 指标卡 + 悬浮状态丸，菜单新增「AI 托管」标签页。`scripts/autoplay_run.py` 无头跑局（`--mock` 无 key 冒烟）。详见 [docs/ai-autoplay.md](docs/ai-autoplay.md)。
 - **事件记忆系统**：每回合结算后自动提炼记忆卡，按人物/派系/官职类型建索引；大臣召见时注入「旧事记忆」块，上限5条，对话前后贯通。支持规则提取（`record_event_memories_from_resolution`）与 LLM 提取（`memory_extractor` agent）两条路径；每科目保留最近3条，超出自动剪枝。
 - **推演记忆注入**：结算链新增 step 1.8——`memory_retrieval` agent 从本月诏书提取人名/地区/军队/势力/关键词（含可选 year/period），按 tags LIKE 匹配召回相关历史记忆（≤10条），注入 `season_simulator` 与 `score_extractor` payload；两个 prompt 同步说明字段含义与使用方式。
 - **记忆自动衰减**：写入时按 importance 设 `expires_turn` TTL（importance 1→6回合、2→12、3→24、4→48、5→永久）；查询默认过滤过期记录，按年月查时可 `ignore_expiry=True` 追溯历史档案。
