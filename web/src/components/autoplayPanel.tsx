@@ -129,6 +129,7 @@ export function AutoplayTab({ onOpenPanel }: { onOpenPanel: () => void }) {
   const [goal, setGoal] = React.useState(() => localStorage.getItem("autoplayGoal") || "");
   const [persona, setPersona] = React.useState(() => localStorage.getItem("autoplayPersona") || PERSONA_DEFAULT_KEY);
   const [maxTurns, setMaxTurns] = React.useState("0");
+  const [maxChats, setMaxChats] = React.useState(() => localStorage.getItem("autoplayMaxChats") || "6");
   const [stepDelay, setStepDelay] = React.useState("0.5");
   const [status, setStatus] = React.useState<AutoplayStatusPayload | null>(null);
   const [busy, setBusy] = React.useState("");
@@ -169,10 +170,12 @@ export function AutoplayTab({ onOpenPanel }: { onOpenPanel: () => void }) {
     try {
       localStorage.setItem("autoplayGoal", goal);
       localStorage.setItem("autoplayPersona", persona);
+      localStorage.setItem("autoplayMaxChats", maxChats);
       const data = await startAutoplay({
         goal,
         persona,
         max_turns: Math.max(0, Number(maxTurns) || 0),
+        max_chats_per_turn: Math.max(1, Number(maxChats) || 6),
         step_delay: Math.max(0, Number(stepDelay) || 0),
       });
       setStatus(data.status);
@@ -258,6 +261,10 @@ export function AutoplayTab({ onOpenPanel }: { onOpenPanel: () => void }) {
             <label className="ap-field">
               <span>最多托管回合（0=不限）</span>
               <input value={maxTurns} onChange={(e) => setMaxTurns(e.target.value)} inputMode="numeric" />
+            </label>
+            <label className="ap-field">
+              <span>每月召见上限（防闲聊拖延）</span>
+              <input value={maxChats} onChange={(e) => setMaxChats(e.target.value)} inputMode="numeric" />
             </label>
             <label className="ap-field">
               <span>步间延时（秒，放慢方便看）</span>
@@ -409,8 +416,9 @@ export function AutoplayPanel({ open, onClose }: { open: boolean; onClose: () =>
           <span className="ap-stat"><i>民心</i><b>{Math.round(metrics["民心"] || 0)}</b></span>
           <span className="ap-stat"><i>皇威</i><b>{Math.round(metrics["皇威"] || 0)}</b></span>
           <span className="ap-stat"><i>已托管</i><b>{fmtClock(status?.elapsed_sec || 0)}</b></span>
+          <span className="ap-stat"><i>本月步数</i><b>{status?.steps_this_turn ?? 0}/{status?.max_steps_per_turn ?? "—"}</b></span>
+          <span className="ap-stat"><i>本月召见</i><b>{status?.chats_this_turn ?? 0}/{status?.max_chats_per_turn ?? "—"}</b></span>
           <span className="ap-stat"><i>工具调用</i><b>{status?.tool_calls ?? 0}</b></span>
-          <span className="ap-stat"><i>召见轮次</i><b>{status?.chat_rounds ?? 0}</b></span>
           <span className="ap-stat"><i>Tokens</i><b>{status?.tokens?.total ?? 0}</b></span>
         </div>
         {status?.goal ? <p className="ap-goal-line">圣训：{status.goal}</p> : null}

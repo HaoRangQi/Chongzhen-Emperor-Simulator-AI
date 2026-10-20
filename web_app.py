@@ -4225,6 +4225,7 @@ class AutoplayStartRequest(BaseModel):
     persona: str = "balanced"
     max_turns: int = 0            # 0=不限
     max_steps_per_turn: int = 4   # 每月 agent 步数预算（防绕圈）
+    max_chats_per_turn: int = 6   # 每月召见上限（防沉迷闲聊）
     token_budget: int = 0         # 0=不限；超过即自动暂停
     step_delay: float = 0.0       # 步间延时（秒，放慢方便观察）
     transcript: bool = False      # 是否把事件流落盘 jsonl 复盘
@@ -4331,6 +4332,7 @@ async def api_autoplay_start(body: AutoplayStartRequest) -> Dict[str, Any]:
         persona=persona,
         max_turns=max(0, int(body.max_turns or 0)),
         max_steps_per_turn=max(1, int(body.max_steps_per_turn or 4)),
+        max_chats_per_turn=max(1, int(body.max_chats_per_turn or 6)),
         token_budget=max(0, int(body.token_budget or 0)),
         step_delay=max(0.0, float(body.step_delay or 0.0)),
     )

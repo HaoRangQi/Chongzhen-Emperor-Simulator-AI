@@ -468,6 +468,9 @@ export type AutoplayStatusPayload = {
   metrics: Record<string, number>;
   turns_played: number;
   steps_this_turn: number;
+  max_steps_per_turn: number;
+  max_chats_per_turn: number;
+  chats_this_turn: number;
   tool_calls: number;
   chat_rounds: number;
   tokens: { input: number; output: number; total: number };

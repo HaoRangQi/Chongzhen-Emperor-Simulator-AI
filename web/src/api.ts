@@ -226,6 +226,7 @@ export const startAutoplay = (body: {
   persona?: string;
   max_turns?: number;
   max_steps_per_turn?: number;
+  max_chats_per_turn?: number;
   token_budget?: number;
   step_delay?: number;
   transcript?: boolean;
