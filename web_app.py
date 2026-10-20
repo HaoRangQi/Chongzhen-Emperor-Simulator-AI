@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import httpx
 import json
 import os
 import queue
@@ -3890,6 +3891,102 @@ class LLMConfigRequest(BaseModel):
     advanced_base_url: str = "__keep__"
     advanced_api_key: str = "__keep__"
     advanced_thinking_level: str = "__keep__"
+    # Cherry Studio / new-api 连接 JSON 直填：{"_type":"newapi_channel_conn","key":"sk-...","url":"https://..."}
+    conn_json: str = ""
+
+
+class LLMModelsRequest(BaseModel):
+    """查询模型列表的探测请求：用表单里（可能未保存的）base_url + api_key；
+    api_key 为空时回退当前已保存的 key，方便只换了网关、key 没变的情况。"""
+    base_url: str = ""
+    api_key: str = ""
+
+
+def _parse_conn_json(raw: str) -> Dict[str, str]:
+    """解析 Cherry Studio / new-api 连接 JSON，返回 {base_url, api_key}。
+
+    兼容格式：
+    - {"_type":"newapi_channel_conn","key":"sk-...","url":"https://windhu.cc"}
+    - 顶层直接带 key/url（或 api_key/base_url）的 JSON
+    url 是站点根地址时自动补 /v1（OpenAI 兼容端点）。
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="连接 JSON 不能为空。")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"连接 JSON 解析失败：{e}") from None
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="连接 JSON 顶层必须是对象。")
+    key = str(data.get("key") or data.get("api_key") or "").strip()
+    url = str(data.get("url") or data.get("base_url") or "").strip()
+    if not key and not url:
+        raise HTTPException(status_code=400, detail="连接 JSON 里找不到 key / url 字段。")
+    if url and not re.match(r"^https?://", url, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail=f"url 不是合法的 http(s) 地址：{url}")
+    return {
+        "base_url": normalize_openai_base_url(url) if url else "",
+        "api_key": key,
+    }
+
+
+@app.post("/api/llm/parse_conn")
+async def api_parse_conn(body: Dict[str, str]) -> Dict[str, Any]:
+    """干解析：只把连接 JSON 拆成 base_url/api_key 回给表单，不保存不生效。
+
+    api_key 原样回传（用户自己刚粘贴的内容，仅同源回显），供表单随后
+    拉取模型列表 / 保存时使用；响应不落任何持久化。"""
+    parsed = _parse_conn_json(str(body.get("conn_json") or ""))
+    return {"base_url": parsed["base_url"], "api_key": parsed["api_key"], "has_key": bool(parsed["api_key"])}
+
+
+@app.post("/api/llm/models")
+async def api_list_llm_models(request: LLMModelsRequest) -> Dict[str, Any]:
+    """向 OpenAI 兼容端点 GET {base_url}/models 探测可用模型列表。
+
+    不写任何配置：base_url/api_key 取表单当前值（key 为空回退已保存的），
+    探测失败返回 400 + 可读原因，前端原地提示。不依赖对局是否已开始。"""
+    base_url = normalize_openai_base_url((request.base_url or "").strip())
+    if not base_url:
+        raise HTTPException(status_code=400, detail="请先填写 Base URL。")
+    saved_key = web_game.session.llm_config.api_key if web_game is not None else ""
+    api_key = (request.api_key or "").strip() or saved_key
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先填写 API Key（或粘贴连接 JSON）。")
+    endpoint = f"{base_url.rstrip('/')}/models"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0)) as client:
+            resp = await client.get(endpoint, headers={"Authorization": f"Bearer {api_key}"})
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=400, detail=f"查询模型超时（15s）：{endpoint}") from None
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=400, detail=f"连接失败：{e}（{endpoint}）") from None
+    if resp.status_code != 200:
+        snippet = (resp.text or "")[:200].replace("\n", " ")
+        raise HTTPException(
+            status_code=400,
+            detail=f"端点返回 HTTP {resp.status_code}：{snippet}（{endpoint}）",
+        ) from None
+    try:
+        payload = resp.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="端点返回的不是合法 JSON（可能不是 OpenAI 兼容网关）。") from None
+    rows = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=400, detail="返回里没有 data 数组（不是标准 /models 响应）。")
+    seen: set[str] = set()
+    models: List[Dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model_id = str(row.get("id") or "").strip()
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append({"id": model_id, "owned_by": str(row.get("owned_by") or row.get("owned_by_org") or "")})
+    models.sort(key=lambda m: m["id"].lower())
+    return {"models": models, "count": len(models), "endpoint": endpoint}
 
 
 @app.get("/api/consorts/candidates")
@@ -4001,11 +4098,20 @@ async def api_set_llm_config(request: LLMConfigRequest) -> Dict[str, Any]:
     adv_base = None if request.advanced_base_url == "__keep__" else request.advanced_base_url
     adv_key = None if request.advanced_api_key == "__keep__" else request.advanced_api_key
     adv_thinking = None if request.advanced_thinking_level == "__keep__" else request.advanced_thinking_level
+    # 连接 JSON 直填：key/url 覆盖表单值（表单空白处用 JSON 补，两处都填则以表单为准）
+    base_url = request.base_url
+    api_key = request.api_key
+    if (request.conn_json or "").strip():
+        parsed = _parse_conn_json(request.conn_json)
+        if parsed["base_url"] and not base_url:
+            base_url = parsed["base_url"]
+        if parsed["api_key"] and not api_key:
+            api_key = parsed["api_key"]
     try:
         cfg = get_game().apply_llm_config(
-            request.base_url,
+            base_url,
             request.model,
-            request.api_key,
+            api_key,
             request.max_tokens,
             request.timeout_seconds,
             request.connect_timeout_seconds,

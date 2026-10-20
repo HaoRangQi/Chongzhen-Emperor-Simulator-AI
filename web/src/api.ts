@@ -8,6 +8,7 @@ import type {
   ChatResponse,
   CourtChatMessage,
   CourtChatResponse,
+  LLMModelInfo,
   ScenarioChatResult,
   ScenarioFull,
   ScenarioGenerateResult,
@@ -217,7 +218,6 @@ export const summarizeCourtChat = async (messages: CourtChatMessage[]): Promise<
 
 export const getAutoplayStatus = () =>
   api<AutoplayStatusPayload>("/api/autoplay/status");
-
 export const getAutoplayPersonas = () =>
   api<{ personas: AutoplayPersona[] }>("/api/autoplay/personas");
 
@@ -247,8 +247,7 @@ export const stopAutoplay = () =>
 export const takeoverAutoplay = () =>
   api<{ ok: boolean; status: AutoplayStatusPayload }>("/api/autoplay/takeover", { method: "POST" });
 
-/** 订阅观战事件流（SSE）。返回取消订阅函数。 */
-export const subscribeAutoplayEvents = (
+/** 订阅观战事件流（SSE）。返回取消订阅函数。 */export const subscribeAutoplayEvents = (
   onEvent: (event: AutoplayEvent) => void,
   onError?: (message: string) => void,
 ): (() => void) => {
@@ -288,6 +287,22 @@ export const subscribeAutoplayEvents = (
   void reader;
   return () => controller.abort();
 };
+
+// ---- LLM 网关：连接 JSON 直填 + 模型探测 ----
+
+/** 干解析 Cherry Studio / new-api 连接 JSON：只拆 base_url/api_key，不保存。 */
+export const parseConnJson = (connJson: string) =>
+  api<{ base_url: string; api_key: string; has_key: boolean }>("/api/llm/parse_conn", {
+    method: "POST",
+    body: JSON.stringify({ conn_json: connJson }),
+  });
+
+/** 向网关 GET {base_url}/models 拉取全部可选模型。api_key 空=用已保存的。 */
+export const fetchLlmModels = (body: { base_url: string; api_key?: string }) =>
+  api<{ models: LLMModelInfo[]; count: number; endpoint: string }>("/api/llm/models", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 
 // ---- 自定义剧本 ----
 

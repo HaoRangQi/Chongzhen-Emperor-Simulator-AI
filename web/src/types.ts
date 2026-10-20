@@ -500,6 +500,12 @@ export type AutoplayDecision = {
   options: { label: string; hint: string }[];
 };
 
+// LLM 网关模型探测（POST /api/llm/models）
+export type LLMModelInfo = {
+  id: string;
+  owned_by: string;
+};
+
 export type SaveEntry = { name: string; size: number; mtime: number };
 
 export type LLMConfigInfo = {
